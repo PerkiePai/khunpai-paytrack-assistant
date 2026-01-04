@@ -169,6 +169,8 @@
         const params = new URLSearchParams(window.location.search);
         const groupId = params.get("groupId");
 
+
+
         if (!groupId) {
             alert("missing groupId");
             return;
@@ -192,7 +194,7 @@
             div.innerHTML = `
                 <label class="personRow">
                     <input type="checkbox" id="member-${p.id}" checked />
-                    <span class="personName">${p.name}</span>
+                    <span class="personName">${p.display_name}</span>
                 </label>
             `;
 
