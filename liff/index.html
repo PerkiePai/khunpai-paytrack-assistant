@@ -120,6 +120,10 @@
     }
 
     async function submitBill() {
+
+        const params = new URLSearchParams(window.location.search);
+        const groupId = params.get("groupId");
+
         const rawTitle = document.getElementById("title").value.trim();
         if (!rawTitle) {
             alert("Please enter bill title");
@@ -127,8 +131,13 @@
         }
 
         const selected = members
-            .filter(p => document.getElementById(p.id).checked)
+            .filter(p => document.getElementById(`member-${p.id}`).checked)
             .map(p => p.id);
+
+        if ( selected.length === 0 ) {
+            alert("select at least one person");
+            return;
+        }
 
         const today = new Date();
         const dateStr = formatDateDDMMYYYY(today);
@@ -137,10 +146,11 @@
         const profile = await liff.getProfile();
 
         const data = {
-            userId: profile.userId,
+            groupId,
             title: finalTitle,
             payType: document.getElementById("payType").value,
-            amount: document.getElementById("amount").value
+            amount: Number(document.getElementById("amount").value),
+            memberIds: selected
         };
 
         await fetch("/api/bill", {
@@ -151,14 +161,7 @@
 
         liff.closeWindow();
     }
-
-
-
-    const mockPeople = [
-        { id: "u1", name: "Alice" },
-        { id: "u2", name: "Bob" },
-        { id: "u3", name: "Charlie" }
-    ];
+    
 
     let members = [];
 
@@ -188,7 +191,7 @@
 
             div.innerHTML = `
                 <label class="personRow">
-                    <input type="checkbox" id="${p.id}" checked />
+                    <input type="checkbox" id="member-${p.id}" checked />
                     <span class="personName">${p.name}</span>
                 </label>
             `;

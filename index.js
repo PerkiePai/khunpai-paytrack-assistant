@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import { middleware, Client } from "@line/bot-sdk";
+
 import pool from "./db.js";
 import { createEmptyBill } from "./services/billservice.js";
 
@@ -18,8 +19,17 @@ const client = new Client(config);
 //state
 const creatingBill = new Map(); // key = userId, value = billId
 
+app.post("/webhook", middleware(config), (request, response) => {
+    Promise
+        .all(request.body.events.map(event => handleEvent(event)))
+        .then(() => response.status(200).end())
+        .catch(err => {
+            console.error(err);
+            response.status(500).end();
+        });
+});
+app.use(express.json());
 
-app.use("/liff", express.static("liff"));
 
 app.get("/api/group-members", async (request, response) => {
     try {
@@ -47,20 +57,69 @@ app.get("/api/group-members", async (request, response) => {
 
 app.post("/api/bill", async (request, respond) => {
     try {
-        const { title, payType, amount } = request.body;
 
-        const result = await pool.query(
-            `INSERT INTO bills (title, total, status)
-            VALUES ($1, $2, 'OPEN')
-            RETURNING *`,
-            [title, amount]
+        console.log("REQ BODY:", request.body);
+
+        const { groupId, title, payType, amount , memberIds } = request.body;
+
+        if ( !groupId || !title || !payType || !amount ) {
+            return respond.status(400).json({ error: "missing fields" });
+        }
+
+        if ( !Array.isArray(memberIds) || memberIds.length === 0 ) {
+            return respond.status(400).json({ error: "no members selected" });
+        }
+
+        const billResult = await pool.query(
+            `INSERT INTO bills (group_id, title, pay_type, total)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id`,
+            [groupId, title, payType, amount]
         );
 
-        console.log("Bill saved:", result.rows[0]);
+        const billId = billResult.rows[0].id;
+
+        const membersResult = await pool.query(
+            `SELECT id FROM group_members WHERE group_id = $1 ORDER BY id`,
+            [groupId]
+        );
+
+        if ( membersResult.rowCount === 0 ) {
+            return respond.status(400).json({ error: "no group members" });
+        }
+
+        if ( payType === "equal" ) {
+
+            const perPerson = Number(amount) / memberIds.length;
+
+            for ( const memberId of memberIds ) {
+                await pool.query(
+                    `INSERT INTO bill_participants
+                    (bill_id , member_id , amount_due)
+                    VALUES ($1 , $2 , $3)`,
+                    [billId , memberId  , perPerson]
+                );
+            }
+        }
+
+        if ( payType === "each" ) {
+
+            const perPerson = Number(amount);
+
+            for ( const memberId of memberIds ) {
+                await pool.query(
+                    `INSERT INTO bill_participants
+                    (bill_id , member_id , amount_due)
+                    VALUES ($1 , $2 , $3)`,
+                    [billId , memberId , perPerson]
+                );
+            }
+        }
 
         respond.json({
             ok: true,
-            bill: result.rows[0]
+            billId,
+            participants: memberIds.length
         });
 
     } catch (err) {
@@ -69,29 +128,22 @@ app.post("/api/bill", async (request, respond) => {
     }
 });
 
-app.post("/webhook", middleware(config), (request, response) => {
-    Promise
-        .all(request.body.events.map(event => handleEvent(event)))
-        .then(() => response.status(200).end())
-        .catch(err => {
-            console.error(err);
-            response.status(500).end();
-        });
-});
-app.use(express.json());
-
+app.use("/liff", express.static("liff"));
 
 async function handleEvent(event) {
 
-    if (event.type === "message" && event.message.type === "text" && event.message.text.startsWith("/member-set")) {
+    //test
+    if ( event.type === "message" && event.message.type === "text" && event.message.text.trim() === "/web" ) {
+        return handleOpenWeb(event);
+    }
+
+    //command
+    if (event.type === "message" && event.message.type === "text" && event.message.text.trim() === "/member-set" ) {
         return handleMemberNameSet(event);
     }
-    if (
-        event.type === "message" &&
-        event.message.type === "text" &&
-        event.message.text.trim() === "/web"
-    ) {
-        return handleOpenWeb(event);
+
+    if (event.type === "message" && event.message.type === "text" && event.message.text.trim() === "/summary" ) {
+        return handleSummary(event);
     }
 
 
@@ -128,43 +180,121 @@ async function handleEvent(event) {
     return Promise.resolve(null);
 }
 
-//---------------------------------------------------------------------------//
+async function handleSummary(event) {
 
-async function getGroupMemberIds(groupId) {
-    const ids = [];
-    let start = null;
+    const groupId = event.source.groupId;
 
-    do {
-        const respond = await client.getGroupMemberIds(groupId, start);
-        ids.push(...respond.membersIds);
-        start = respond.next;
-
-    } while (start);
-
-    return ids;
-}
-
-async function getGroupMembers(groupId) {
-    const memberIds = await getGroupMemberIds(groupId);
-
-    const members = [];
-
-    for (const userId of memberIds) {
-        try {
-            const profile = await client.getGroupMemberProfile(groupId, userId);
-            members.push({
-                userId,
-                displayName: profile.displayName,
-                pictureUrl: profile.pictureUrl
-            });
-
-        } catch (err) {
-            console.warn("cannot get profile for", userId);
-        }
+    if ( !groupId ) {
+        return client.replyMessage(event.replyToken, {
+            type: "text",
+            text: "❌ This command works only in groups"
+        });
     }
 
-    return members;
+    const summary = await getLastestBillSummary(groupId);
+
+    if ( !summary ) {
+        return client.replyMessage(event.replyToken, {
+            type: "text",
+            text: "❌ No bill found"
+        });
+    }
+
+    return client.replyMessage(event.replyToken, {
+        type: "flex",
+        altText: "Bill summary",
+        contents: billSummaryFlex(summary)
+    })
+
 }
+
+async function getLastestBillSummary( groupId ) {
+
+    const billResult = await pool.query(
+        `SELECT id , title , total 
+        FROM bills 
+        WHERE group_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1`,
+        [groupId]
+    );
+
+    if ( billResult.count === 0 ) return null;
+
+    const bill = billResult.rows[0];
+
+    const participantsResult = await pool.query(
+        `SELECT gm.name , bp.amount_due , bp.paid
+        FROM bill_participants bp
+        JOIN group_members gm ON gm.id = bp.member_id
+        WHERE bp.bill_id = $1
+        ORDER BY gm.id`,
+        [bill.id]
+    );
+
+    return {
+        bill,
+        participants: participantsResult.rows
+    };
+
+} 
+
+function billSummaryFlex(summary) {
+
+  return {
+    type: "bubble",
+    body: {
+      type: "box",
+      layout: "vertical",
+      spacing: "md",
+      contents: [
+        {
+          type: "text",
+          text: summary.bill.title,
+          weight: "bold",
+          size: "lg",
+          wrap: true
+        },
+        {
+          type: "text",
+          text: `Total: ${summary.bill.total}`,
+          color: "#666666",
+          size: "sm"
+        },
+        {
+          type: "separator"
+        },
+        ...summary.participants.map(p => ({
+          type: "box",
+          layout: "horizontal",
+          contents: [
+            {
+              type: "text",
+              text: p.paid ? "✅" : "❌",
+              size: "sm",
+              flex: 0
+            },
+            {
+              type: "text",
+              text: p.name,
+              flex: 2
+            },
+            {
+              type: "text",
+              text: `${p.amount_due}`,
+              align: "end",
+              flex: 1
+            }
+          ]
+        }))
+      ]
+    }
+  };
+
+}
+
+
+//---------------------------------------------------------------------------//
 
 //chat gen
 async function handleMemberNameSet(event) {
