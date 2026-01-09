@@ -42,10 +42,12 @@ No test suite is configured.
 ### Frontend (`liff/`)
 - `index.html` - LIFF web app for bill creation UI, served at `/liff`
 
-### Database Schema (inferred from queries)
-- `group_members` - LINE group member tracking (group_id, user_id, display_name, picture_url, joined_at)
-- `bills` - Bill records (group_id, title, pay_type, total, created_at)
-- `bill_participants` - Bill participant records (bill_id, member_id, amount_due, paid)
+### Database Schema
+- `users` - User profiles (user_id PK, display_name)
+- `groups` - LINE groups (group_id PK)
+- `group_members` - Junction table linking users to groups (group_id FK, user_id FK, PK(group_id, user_id))
+- `bills` - Bill records (bill_id PK, group_id FK, title, total_pay_amount, pay_type, status, created_at)
+- `bill_participants` - Bill participant records (bill_id FK, user_id FK, pay_amount, pay_at, PK(bill_id, user_id))
 
 ## Key Features
 

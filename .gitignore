@@ -27,3 +27,5 @@ Thumbs.db
 dist/
 build/
 .cache/
+
+CLAUDE.md

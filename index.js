@@ -42,10 +42,11 @@ app.get("/api/group-members", async (request, response) => {
         }
 
         const result = await pool.query(
-            `SELECT id, user_id, display_name 
-             FROM group_members
-             WHERE group_id = $1
-             ORDER BY id`,
+            `SELECT gm.user_id, u.display_name
+             FROM group_members gm
+             JOIN users u ON u.user_id = gm.user_id
+             WHERE gm.group_id = $1
+             ORDER BY u.display_name`,
             [groupId]
         );
 
@@ -104,10 +105,10 @@ app.post("/api/bill", async (request, response) => {
         // Start transaction
         await dbClient.query('BEGIN');
 
-        // Verify all memberIds exist in the group
+        // Verify all memberIds (user_ids) exist in the group
         const memberCheckResult = await dbClient.query(
-            `SELECT id FROM group_members 
-             WHERE group_id = $1 AND id = ANY($2::int[])`,
+            `SELECT user_id FROM group_members
+             WHERE group_id = $1 AND user_id = ANY($2::text[])`,
             [groupId, memberIds]
         );
 
@@ -121,13 +122,13 @@ app.post("/api/bill", async (request, response) => {
 
         // Create bill
         const billResult = await dbClient.query(
-            `INSERT INTO bills (group_id, title, pay_type, total)
+            `INSERT INTO bills (group_id, title, pay_type, total_pay_amount)
              VALUES ($1, $2, $3, $4)
-             RETURNING id`,
+             RETURNING bill_id`,
             [groupId, title, payType, numAmount]
         );
 
-        const billId = billResult.rows[0].id;
+        const billId = billResult.rows[0].bill_id;
 
         // Calculate per-person amount
         const perPerson = payType === "equal" 
@@ -135,11 +136,11 @@ app.post("/api/bill", async (request, response) => {
             : numAmount;
 
         // Insert all participants in transaction
-        for (const memberId of memberIds) {
+        for (const userId of memberIds) {
             await dbClient.query(
-                `INSERT INTO bill_participants (bill_id, member_id, amount_due)
+                `INSERT INTO bill_participants (bill_id, user_id, pay_amount)
                  VALUES ($1, $2, $3)`,
-                [billId, memberId, perPerson]
+                [billId, userId, perPerson]
             );
         }
 
@@ -253,20 +254,40 @@ async function autoRegisterMember(event) {
         if (exists.rowCount > 0) return;
 
         let displayName = null;
-        let pictureUrl = null;
+        let groupName = null;
 
         try {
             const profile = await client.getGroupMemberProfile(groupId, userId);
             displayName = profile.displayName;
-            pictureUrl = profile.pictureUrl;
         } catch (profileError) {
             console.warn("Could not fetch profile:", profileError.message);
         }
 
+        try {
+            const groupSummary = await client.getGroupSummary(groupId);
+            groupName = groupSummary.groupName;
+        } catch (groupError) {
+            console.warn("Could not fetch group name:", groupError.message);
+        }
+
+        // Upsert group (insert or update group_name)
         await pool.query(
-            `INSERT INTO group_members (group_id, user_id, display_name, picture_url)
-             VALUES ($1, $2, $3, $4)`,
-            [groupId, userId, displayName, pictureUrl]
+            `INSERT INTO groups (group_id, group_name) VALUES ($1, $2)
+             ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name`,
+            [groupId, groupName]
+        );
+
+        // Upsert user (insert or update display_name)
+        await pool.query(
+            `INSERT INTO users (user_id, display_name) VALUES ($1, $2)
+             ON CONFLICT (user_id) DO UPDATE SET display_name = EXCLUDED.display_name`,
+            [userId, displayName]
+        );
+
+        // Link user to group
+        await pool.query(
+            `INSERT INTO group_members (group_id, user_id) VALUES ($1, $2)`,
+            [groupId, userId]
         );
 
         console.log(`Registered new member: ${displayName || userId}`);
@@ -312,8 +333,8 @@ async function handleStatus(event) {
 async function getLatestBillStatus(groupId) {
     try {
         const billResult = await pool.query(
-            `SELECT id, title, total 
-             FROM bills 
+            `SELECT bill_id, title, total_pay_amount
+             FROM bills
              WHERE group_id = $1
              ORDER BY created_at DESC
              LIMIT 1`,
@@ -325,12 +346,12 @@ async function getLatestBillStatus(groupId) {
         const bill = billResult.rows[0];
 
         const participantsResult = await pool.query(
-            `SELECT gm.display_name, bp.amount_due, bp.paid
+            `SELECT u.display_name, bp.pay_amount, bp.pay_at
              FROM bill_participants bp
-             JOIN group_members gm ON gm.id = bp.member_id
+             JOIN users u ON u.user_id = bp.user_id
              WHERE bp.bill_id = $1
-             ORDER BY gm.id`,
-            [bill.id]
+             ORDER BY u.display_name`,
+            [bill.bill_id]
         );
 
         return {
@@ -360,7 +381,7 @@ function billStatusFlex(status) {
                 },
                 {
                     type: "text",
-                    text: `Total: ฿${status.bill.total}`,
+                    text: `Total: ฿${status.bill.total_pay_amount}`,
                     color: "#666666",
                     size: "sm"
                 },
@@ -375,7 +396,7 @@ function billStatusFlex(status) {
                     contents: [
                         {
                             type: "text",
-                            text: p.paid ? "✅" : "❌",
+                            text: p.pay_at ? "✅" : "❌",
                             size: "sm",
                             flex: 0
                         },
@@ -387,7 +408,7 @@ function billStatusFlex(status) {
                         },
                         {
                             type: "text",
-                            text: `฿${p.amount_due}`,
+                            text: `฿${p.pay_amount}`,
                             align: "end",
                             flex: 1
                         }
@@ -448,10 +469,11 @@ async function handleMemberList(event) {
 
     try {
         const result = await pool.query(
-            `SELECT display_name
-             FROM group_members
-             WHERE group_id = $1
-             ORDER BY joined_at`,
+            `SELECT u.display_name
+             FROM group_members gm
+             JOIN users u ON u.user_id = gm.user_id
+             WHERE gm.group_id = $1
+             ORDER BY u.display_name`,
             [groupId]
         );
 

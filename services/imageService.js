@@ -108,7 +108,8 @@ async function handleSlipImage({ event, client, buffer }) {
     const tolerance = pendingBill.amount_due * 0.05;
     const diff = Math.abs(slipInfo.amount - pendingBill.amount_due);
 
-    if (diff > tolerance) {
+    if (pendingBill.amount_due > slipInfo.amount && diff > tolerance) {
+        console.log(pendingBill.amount_due);
         return client.replyMessage(event.replyToken, {
             type: "flex",
             altText: "Payment Amount Mismatch",
@@ -117,7 +118,7 @@ async function handleSlipImage({ event, client, buffer }) {
     }
 
     // Mark as paid
-    await markAsPaid(pendingBill.participant_id);
+    await markAsPaid(pendingBill.bill_id, pendingBill.user_id);
 
     return client.replyMessage(event.replyToken, {
         type: "flex",
@@ -129,11 +130,10 @@ async function handleSlipImage({ event, client, buffer }) {
 // Find user's pending bill in latest bill for this group
 async function findPendingBillForUser(groupId, userId) {
     const result = await pool.query(
-        `SELECT bp.id as participant_id, bp.amount_due, b.title as bill_title, b.id as bill_id
+        `SELECT bp.user_id, bp.bill_id, b.title as bill_title, bp.pay_amount as amount_due
          FROM bill_participants bp
-         JOIN bills b ON b.id = bp.bill_id
-         JOIN group_members gm ON gm.id = bp.member_id
-         WHERE b.group_id = $1 AND gm.user_id = $2 AND bp.paid = false
+         JOIN bills b ON b.bill_id = bp.bill_id
+         WHERE b.group_id = $1 AND bp.user_id = $2 AND bp.pay_at IS NULL
          ORDER BY b.created_at DESC
          LIMIT 1`,
         [groupId, userId]
@@ -142,10 +142,11 @@ async function findPendingBillForUser(groupId, userId) {
 }
 
 // Mark participant as paid
-async function markAsPaid(participantId) {
+async function markAsPaid(billId, userId) {
     await pool.query(
-        `UPDATE bill_participants SET paid = true WHERE id = $1`,
-        [participantId]
+        `UPDATE bill_participants SET pay_at = NOW()
+         WHERE bill_id = $1 AND user_id = $2`,
+        [billId, userId]
     );
 }
 

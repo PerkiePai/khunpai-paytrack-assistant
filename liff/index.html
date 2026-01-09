@@ -227,8 +227,8 @@
         }
 
         // Validate at least one member selected
-        const selected = members.filter(p => 
-            document.getElementById(`member-${p.id}`)?.checked
+        const selected = members.filter(p =>
+            document.getElementById(`member-${p.user_id}`)?.checked
         );
         
         if (selected.length === 0) {
@@ -270,8 +270,8 @@
             const finalTitle = `${rawTitle} (${dateStr})`;
 
             const selected = members
-                .filter(p => document.getElementById(`member-${p.id}`).checked)
-                .map(p => p.id);
+                .filter(p => document.getElementById(`member-${p.user_id}`).checked)
+                .map(p => p.user_id);
 
             const data = {
                 groupId,
@@ -356,7 +356,7 @@
 
             div.innerHTML = `
                 <label class="personRow">
-                    <input type="checkbox" id="member-${p.id}" checked />
+                    <input type="checkbox" id="member-${p.user_id}" checked />
                     <span class="personName">${p.display_name || "(Unknown)"}</span>
                 </label>
             `;
