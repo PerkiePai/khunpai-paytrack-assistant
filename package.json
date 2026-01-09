@@ -1,10 +1,11 @@
 {
   "name": "khunpai",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "type": "module",
+  "description": "LINE chatbot for bill splitting",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
   },
   "keywords": [],
   "author": "",
@@ -13,10 +14,7 @@
     "@google/generative-ai": "^0.24.1",
     "@line/bot-sdk": "^10.5.0",
     "canvas": "^3.2.0",
-    "dotenv": "^17.2.3",
-    "express": "^5.2.1",
     "jsqr": "^1.4.0",
-    "node-cron": "^4.2.1",
     "pg": "^8.16.3"
   }
 }

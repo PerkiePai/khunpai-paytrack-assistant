@@ -1,0 +1,7 @@
+{
+  "version": 2,
+  "routes": [
+    { "src": "/liff/(.*)", "dest": "/public/liff/$1" },
+    { "src": "/liff", "dest": "/public/liff/index.html" }
+  ]
+}
